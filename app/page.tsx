@@ -8,7 +8,6 @@ import CourseList from "./_components/CourseList";
 export default function Home() {
   return (
     <div>
-      <Header/>
       <Hero/>
       <CourseList/>
       
