@@ -15,10 +15,10 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { QUICK_VIDEO_SUGGESTIONS } from '@/data/constant'
-import { index } from 'drizzle-orm/gel-core'
 import axios from 'axios'
 import { toast } from 'sonner'
 import { SignInButton, useUser } from '@clerk/nextjs'
+import { useRouter } from 'next/navigation'
 
 function Hero() {
 
@@ -26,6 +26,7 @@ function Hero() {
     const [type,setType] = useState('full-course');
     const [loading,setLoading] = useState(false);
     const {user} = useUser();
+    const router = useRouter();
 
     const GenerateCourseLayout=async()=>{
         
@@ -42,6 +43,9 @@ function Hero() {
             console.log(result.data);
             setLoading(false);
             toast.success('Course layout generated succesfully!',{ id: toastId });
+
+            //navigate to course editor page
+            router.push('/course/'+courseId);
         } catch (error) {
             setLoading(false);
             toast.error('Something went wrong. Please try again.',{ id: toastId });
