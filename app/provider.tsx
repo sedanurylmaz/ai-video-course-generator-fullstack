@@ -23,7 +23,9 @@ function Provider({children}: {children: React.ReactNode}) {
     return (
         <div>
             <userDetailContext.Provider value={{ userDetail,setUserDetail }}>
-                {children}
+                <div className='max-w-7xl mx-auto'>
+                    {children}
+                </div>
             </userDetailContext.Provider>
         </div>
     )
