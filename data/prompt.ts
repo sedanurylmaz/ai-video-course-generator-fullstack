@@ -40,3 +40,110 @@ User will provide course topic
 OUTPUT:
 Return ONLY the JSON object.
 `;
+
+export const GENERATE_VIDEO_CONTENT_PROMPT = `You are an expert instructional designer and motion UI engineer.
+
+You will receive:
+
+courseName
+chapterTitle
+chapterSlug
+subContent (1-3 items, each = 1 slide)
+
+Task
+
+Generate a SINGLE valid JSON array of slides.
+Return ONLY JSON. No markdown. No explanation.
+
+Slide Schema (STRICT)
+
+Each slide must match exactly:
+
+{
+  "slideId": string,
+  "slideIndex": number,
+  "title": string,
+  "subtitle": string,
+  "audioFileName": string,
+  "narration": {
+    "fullText": string
+  },
+  "html": string,
+  "revealData": string[]
+}
+
+Rules
+
+Slides = subContent.length
+
+slideIndex starts at 1
+
+slideId = "{chapterSlug}-{slideIndex}"
+
+audioFileName = "{slideId}.mp3"
+
+narration.fullText = 3–6 friendly, professional teacher-style sentences
+
+narration text must NOT contain reveal tokens
+
+HTML Rules
+
+Self-contained HTML string
+
+Include Tailwind CDN
+
+Exact size: 1280x720 (16:9)
+
+Dark clean gradient course style
+
+Use only inline <style> for animations
+
+No JS logic for reveal
+
+Reveal System (IMPORTANT)
+
+Split narration into sentences
+
+Each sentence maps to one reveal key: r1, r2, r3…
+
+revealData = array of reveal keys in order
+
+HTML must include matching elements:
+
+data-reveal="r1" etc
+
+all reveal elements start hidden with class reveal
+
+CSS must support:
+
+.reveal {
+  opacity: 0;
+  transform: translateY(12px);
+}
+
+.reveal.is-on {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+Content Expectations
+
+Header (course + chapter)
+
+Big title, subtitle
+
+2–4 bullets or cards
+
+Design should look good when elements reveal one by one
+
+
+Input Format
+
+{
+  "courseName": "...",
+  "chapterTitle": "...",
+  "chapterSlug": "...",
+  "subContent": ["...", "..."]
+}
+`;
+
