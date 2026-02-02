@@ -1,26 +1,46 @@
 import { NextRequest, NextResponse } from "next/server";
 import axios from "axios";
-import { VideoSlidesDummy } from "@/data/Dummy";
 import { Storage } from "@google-cloud/storage";
 import Replicate from "replicate";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { eq } from "drizzle-orm";
+
 import { chapterContentSlides } from "@/config/schema";
 import { db } from "@/config/db";
+import { GENERATE_VIDEO_CONTENT_PROMPT } from "@/data/prompt";
 
-type SlideWithAudio = (typeof VideoSlidesDummy)[number] & {
-  audioUrls?: string[];
+/* ================= TYPES ================= */
+
+type Slide = {
+  slideId: string;
+  slideIndex: number;
+  title: string;
+  subtitle: string;
+  audioFileName: string;
+  narration: { fullText: string };
+  html: string;
+  revealData: string[];
 };
+
+/* ================= SETUP ================= */
 
 const storage = new Storage();
 const bucket = storage.bucket(process.env.GCS_BUCKET_NAME!);
 
 const replicate = new Replicate({
-  auth: process.env.REPLICATE_API_KEY || "",
+  auth: process.env.REPLICATE_API_KEY!,
 });
 
-/**
- * Metni belirli uzunluklarda parçalara böler
- */
-function chunkText(text: string, size = 400) {
+const genAI = new GoogleGenerativeAI(
+  process.env.GEMINI_API_KEY!
+);
+
+const sleep = (ms: number) =>
+  new Promise(res => setTimeout(res, ms));
+
+/* ================= HELPERS ================= */
+
+function chunkText(text: string, size = 180) {
   const chunks: string[] = [];
   for (let i = 0; i < text.length; i += size) {
     chunks.push(text.slice(i, i + size));
@@ -28,96 +48,123 @@ function chunkText(text: string, size = 400) {
   return chunks;
 }
 
+async function saveAudio(buffer: Buffer, fileName: string) {
+  const file = bucket.file(`${fileName}.mp3`);
+  await file.save(buffer, {
+    contentType: "audio/mpeg",
+    resumable: false,
+  });
+  return `https://storage.googleapis.com/${bucket.name}/${file.name}`;
+}
+
+async function generateCaptions(audioUrl: string) {
+  return replicate.run(
+    "vaibhavs10/incredibly-fast-whisper:3ab86df6c8f54c11309d4d1f930ac292bad43ace52d10c80d87eb258b3c9f79c",
+    { input: { audio: audioUrl, batch_size: 64 } }
+  );
+}
+
+/* ================= API ================= */
+
 export async function POST(req: NextRequest) {
   const { chapter, courseId } = await req.json();
 
-  if (!process.env.FONADALAB_API_KEY) {
-    throw new Error("FONADA API KEY is missing");
+  /* ---------- GUARD: chapter zaten üretilmiş mi? ---------- */
+  const existing = await db
+    .select()
+    .from(chapterContentSlides)
+    .where(eq(chapterContentSlides.chapterId, chapter.chapterId))
+    .limit(1);
+
+  if (existing.length > 0) {
+    return NextResponse.json({
+      success: true,
+      skipped: true,
+      message: "Chapter already generated",
+    });
   }
 
-  /**
-   * 1️⃣ SLIDE LISTESİ (şimdilik Dummy)
-   * Her eleman = 1 video sahnesi
-   */
-  const slides = VideoSlidesDummy as SlideWithAudio[];
+  /* ---------- AI SLIDE GENERATION ---------- */
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.5-flash",
+  });
 
-  console.log("SLIDE COUNT:", slides.length);
+  const prompt = `
+${GENERATE_VIDEO_CONTENT_PROMPT}
 
-  const processedSlides: {
-    slideId: string;
-    audioFileUrl: string;
-  }[] = [];
+INPUT:
+{
+  "courseName": "${chapter.courseName ?? ""}",
+  "chapterTitle": "${chapter.chapterTitle}",
+  "chapterSlug": "${chapter.chapterId}",
+  "subContent": ${JSON.stringify(chapter.subContent.slice(0, 3))}
+}
 
-  /**
-   * 2️⃣ TÜM SLIDE'LAR İÇİN PIPELINE
-   */
+Return ONLY valid JSON.
+`;
+
+  const result = await model.generateContent(prompt);
+  let aiText = result.response.text().trim();
+
+  if (aiText.startsWith("```")) {
+    aiText = aiText.replace(/```json|```/g, "").trim();
+  }
+
+  // 🔒 sadece array kısmını al
+  const start = aiText.indexOf("[");
+  const end = aiText.lastIndexOf("]");
+  if (start === -1 || end === -1) {
+    console.error("AI RAW OUTPUT:", aiText);
+    throw new Error("Invalid AI JSON");
+  }
+
+  const slides: Slide[] = JSON.parse(
+    aiText.slice(start, end + 1)
+  );
+
+  /* ---------- TTS + DB ---------- */
   for (const slide of slides) {
     try {
-      const narration = slide.narration?.fullText;
-      if (!narration) {
-        console.warn("⏭️ Narration yok, slide atlandı:", slide.slideId);
-        continue;
-      }
-
-      /**
-       * 3️⃣ TTS – narration → chunk → audio buffer
-       */
-      const chunks = chunkText(narration, 400);
+      const chunks = chunkText(slide.narration.fullText);
       const audioBuffers: Buffer[] = [];
 
-      for (let j = 0; j < chunks.length; j++) {
-        const fonadaResult = await axios.post(
+      for (const chunk of chunks) {
+        await sleep(7000); // ⏱️ rate limit koruması
+
+        const res = await axios.post(
           "https://api.fonada.ai/tts/generate-audio-large",
           {
-            input: chunks[j],
+            input: chunk,
             voice: "Vaanee",
             language: "English",
           },
           {
             headers: {
-              "Content-Type": "application/json",
               Authorization: `Bearer ${process.env.FONADALAB_API_KEY}`,
+              "Content-Type": "application/json",
             },
             responseType: "arraybuffer",
             timeout: 120000,
           }
         );
 
-        audioBuffers.push(Buffer.from(fonadaResult.data));
+        audioBuffers.push(Buffer.from(res.data));
       }
 
-      if (audioBuffers.length === 0) {
-        console.warn("⏭️ Audio üretilemedi:", slide.slideId);
-        continue;
-      }
-
-      /**
-       * 4️⃣ AUDIO MERGE → TEK MP3
-       */
-      const finalAudioBuffer = Buffer.concat(audioBuffers);
-
-      const audioFileUrl = await SaveAudioToStorage(
-        finalAudioBuffer,
+      const audioUrl = await saveAudio(
+        Buffer.concat(audioBuffers),
         slide.slideId
       );
 
-      slide.audioUrls = [audioFileUrl];
+      const captions = await generateCaptions(audioUrl);
 
-      /**
-       * 5️⃣ CAPTION – tüm narration için
-       */
-      const captions = await GenerateCaptions(audioFileUrl);
-
-      /**
-       * 6️⃣ DB INSERT (slide başına 1 kayıt)
-       */
       await db.insert(chapterContentSlides).values({
         chapterId: chapter.chapterId,
-        courseId: courseId,
-        slideIndex: slide.slideIndex,
+        courseId,
         slideId: slide.slideId,
+        slideIndex: slide.slideIndex,
         audioFileName: slide.audioFileName,
-        audioFileUrl: audioFileUrl, // ✅ NOT NULL
+        audioFileUrl: audioUrl,
         narration: slide.narration,
         html: slide.html,
         revelData: slide.revealData,
@@ -126,59 +173,13 @@ export async function POST(req: NextRequest) {
 
       console.log("✅ SLIDE OK:", slide.slideId);
 
-      processedSlides.push({
-        slideId: slide.slideId,
-        audioFileUrl,
-      });
-
     } catch (err) {
       console.error("❌ SLIDE ERROR:", slide.slideId, err);
-      // bir slide patlarsa tüm pipeline durmasın
-      continue;
     }
   }
 
-  /**
-   * 7️⃣ RESPONSE
-   */
   return NextResponse.json({
     success: true,
     totalSlides: slides.length,
-    processedSlides: processedSlides.length,
-    slides: processedSlides,
   });
 }
-
-/**
- * ☁️ AUDIO SAVE – GOOGLE CLOUD STORAGE
- */
-const SaveAudioToStorage = async (
-  AudioBuffer: Buffer,
-  fileName: string
-) => {
-  const file = bucket.file(`${fileName}.mp3`);
-
-  await file.save(AudioBuffer, {
-    contentType: "audio/mpeg",
-    resumable: false,
-  });
-
-  return `https://storage.googleapis.com/${bucket.name}/${file.name}`;
-};
-
-/**
- * 🎤 CAPTION – WHISPER (REPLICATE)
- */
-const GenerateCaptions = async (audioUrl: string) => {
-  const input = {
-    audio: audioUrl,
-    batch_size: 64,
-  };
-
-  const output = await replicate.run(
-    "vaibhavs10/incredibly-fast-whisper:3ab86df6c8f54c11309d4d1f930ac292bad43ace52d10c80d87eb258b3c9f79c",
-    { input }
-  );
-
-  return output;
-};

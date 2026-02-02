@@ -1,14 +1,169 @@
-import React from 'react'
-import { AbsoluteFill } from 'remotion'
+// CourseComposition.tsx
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  AbsoluteFill,
+  Audio,
+  Sequence,
+  useCurrentFrame,
+  useVideoConfig,
+} from "remotion";
 
-function ChapterVideo() {
+/* ===================== Types ===================== */
+
+type CaptionChunk = {
+  timestamp: [number, number];
+};
+
+type Slide = {
+  slideId: string;
+  html: string;
+  audioFileUrl: string;
+  revealData?: string[];
+  caption?: {
+    chunks: CaptionChunk[];
+  };
+};
+
+/* ===================== Reveal runtime (iframe side) ===================== */
+
+const REVEAL_RUNTIME_SCRIPT = `
+<script>
+(function () {
+  function reset() {
+    document.querySelectorAll(".reveal").forEach(function (el) {
+      el.classList.remove("is-on");
+    });
+  }
+
+  function reveal(id) {
+    var el = document.querySelector('[data-reveal="' + id + '"]');
+    if (el) el.classList.add("is-on");
+  }
+
+  window.addEventListener("message", function (e) {
+    var msg = e.data;
+    if (!msg) return;
+
+    if (msg.type === "RESET") reset();
+    if (msg.type === "REVEAL") reveal(msg.id);
+  });
+})();
+</script>
+`;
+
+const injectRevealRuntime = (html: string) => {
+  if (html.includes("</body>")) {
+    return html.replace("</body>", `${REVEAL_RUNTIME_SCRIPT}</body>`);
+  }
+  return html + REVEAL_RUNTIME_SCRIPT;
+};
+
+/* ===================== Slide with reveal control ===================== */
+
+const SlideIframeWithReveal = ({ slide }: { slide: Slide }) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const time = frame / fps;
+
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [ready, setReady] = useState(false);
+
+  const revealPlan = useMemo(() => {
+    const ids = slide.revealData ?? [];
+    const chunks = slide.caption?.chunks ?? [];
+
+    return ids.map((id, i) => ({
+      id,
+      at: chunks[i]?.timestamp?.[0] ?? 0,
+    }));
+  }, [slide.revealData, slide.caption]);
+
+  const handleLoad = () => {
+    setReady(true);
+    iframeRef.current?.contentWindow?.postMessage(
+      { type: "RESET" },
+      "*"
+    );
+  };
+
+  useEffect(() => {
+    if (!ready) return;
+
+    const win = iframeRef.current?.contentWindow;
+    if (!win) return;
+
+    win.postMessage({ type: "RESET" }, "*");
+
+    for (const step of revealPlan) {
+      if (time >= step.at) {
+        win.postMessage({ type: "REVEAL", id: step.id }, "*");
+      }
+    }
+  }, [time, ready, revealPlan]);
+
   return (
-    <div>
-        <AbsoluteFill>
-            <h2>Hello World</h2>
-        </AbsoluteFill>
-    </div>
-  )
+    <AbsoluteFill>
+      <iframe
+        ref={iframeRef}
+        srcDoc={injectRevealRuntime(slide.html)}
+        onLoad={handleLoad}
+        sandbox="allow-scripts allow-same-origin"
+        style={{
+          width: 1280,
+          height: 720,
+          border: "none",
+        }}
+      />
+      <Audio src={slide.audioFileUrl} />
+    </AbsoluteFill>
+  );
+};
+
+/* ===================== Course Composition ===================== */
+
+type Props = {
+  slides: Slide[];
+  durationsBySlideId: Record<string, number>;
 }
 
-export default ChapterVideo
+export const CourseComposition = ({
+  slides,
+  durationsBySlideId,
+}: Props) => {
+  const { fps } = useVideoConfig();
+
+  const GAP_SECONDS = 1;
+  const GAP_FRAMES = Math.round(GAP_SECONDS * fps);
+
+  const timeline = useMemo(() => {
+    let from = 0;
+
+    return slides.map((slide) => {
+        const dur =
+        durationsBySlideId[slide.slideId] ??
+        Math.round(1 * fps);
+
+      const item = { slide, from, dur };
+
+      // after slide ends, wait before next slide
+      from += dur + GAP_FRAMES;
+
+      return item;
+    });
+  }, [slides, durationsBySlideId, fps]);
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: "#000" }}>
+      {timeline.map(({ slide, from, dur }) => (
+        <Sequence
+          key={from}
+          from={from}
+          durationInFrames={dur}
+        >
+          <SlideIframeWithReveal slide={slide} />
+        </Sequence>
+
+      ))}
+    </AbsoluteFill>
+  );
+};

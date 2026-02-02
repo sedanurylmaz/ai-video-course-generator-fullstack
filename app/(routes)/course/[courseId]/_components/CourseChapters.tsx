@@ -3,13 +3,26 @@ import { Course } from '@/type/CourseType'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dot } from 'lucide-react'
 import { Player } from '@remotion/player' 
-import ChapterVideo from './ChapterVideo'
+import { CourseComposition } from './ChapterVideo'
 
 type Props = {
-  course: Course | undefined
+  course: Course | undefined,
+  durationsBySlideId: Record<string, number> | null
 }
 
-function CourseChapters({course}: Props) {
+function CourseChapters({ course, durationsBySlideId }: Props) {
+
+  const slides = course?.chapterContentSlides??[];
+
+  const GetChapterDurationInFrame=(chapterId:string)=>{
+    if(!durationsBySlideId || !course) return 30;
+
+    return course?.chapterContentSlides
+    .filter((slide)=>slide.chapterId==chapterId)
+    .reduce((sum,slide)=>sum+(durationsBySlideId[slide.slideId]??30),0)
+  }
+
+
   return (
     <div  className='max-w-6xl -mt-5 p-10 border rounded-3xl shadow w-full
     bg-background/80 backdrop-blur'>
@@ -42,8 +55,14 @@ function CourseChapters({course}: Props) {
                         </div>
                         <div>
                             <Player
-                                component={ChapterVideo}
-                                durationInFrames={30}
+                                component={CourseComposition}
+                                inputProps={{
+                                    //@ts-ignore
+                                    slides: slides.filter((slide)=>slide.chapterId==chapter.chapterId),
+                                    durationsBySlideId: durationsBySlideId??{}
+                                }}
+                                durationInFrames={GetChapterDurationInFrame(chapter?.chapterId)}
+                                //durationInFrames={30}
                                 compositionWidth={1280}
                                 compositionHeight={720}
                                 fps={30}
