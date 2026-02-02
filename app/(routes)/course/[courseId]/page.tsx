@@ -57,6 +57,7 @@ function CoursePreview() {
     const slides=courseDetail?.chapterContentSlides??[];
   
     const [durationsBySlideId,setDurationsBySlideId]=useState<Record<string,number>|null>(null);
+
   
     useEffect(()=>{
       let cancelled=false;
