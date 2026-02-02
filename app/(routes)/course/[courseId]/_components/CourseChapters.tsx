@@ -1,4 +1,5 @@
 import React from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Course } from '@/type/CourseType'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dot } from 'lucide-react'
@@ -14,6 +15,8 @@ function CourseChapters({ course, durationsBySlideId }: Props) {
 
   const slides = course?.chapterContentSlides??[];
 
+  const fps = 30;
+
   const GetChapterDurationInFrame=(chapterId:string)=>{
     if(!durationsBySlideId || !course) return 30;
 
@@ -22,6 +25,10 @@ function CourseChapters({ course, durationsBySlideId }: Props) {
     .reduce((sum,slide)=>sum+(durationsBySlideId[slide.slideId]??30),0)
   }
 
+  const durationInFrames=useMemo(()=>{
+      if(!durationsBySlideId) return;
+      return slides.reduce((sum,slide)=>sum+(durationsBySlideId[slide.slideId]??fps*6),0)
+    },[durationsBySlideId,slides,fps])
 
   return (
     <div  className='max-w-6xl -mt-5 p-10 border rounded-3xl shadow w-full
@@ -61,7 +68,7 @@ function CourseChapters({ course, durationsBySlideId }: Props) {
                                     slides: slides.filter((slide)=>slide.chapterId==chapter.chapterId),
                                     durationsBySlideId: durationsBySlideId??{}
                                 }}
-                                durationInFrames={GetChapterDurationInFrame(chapter?.chapterId)}
+                                durationInFrames={durationInFrames && durationInFrames!==0?durationInFrames:30}
                                 //durationInFrames={30}
                                 compositionWidth={1280}
                                 compositionHeight={720}
