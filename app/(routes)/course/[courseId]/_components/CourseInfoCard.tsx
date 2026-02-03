@@ -7,14 +7,15 @@ import { CourseComposition } from './ChapterVideo'
 
 type Props = {
   course: Course | undefined,
-  durationsBySlideId: Record<string, number> | null
-}
+  durationsBySlideId: Record<string,number> | null
+ }
 
 function CourseInfoCard({course, durationsBySlideId}: Props) {
   
-  const fps = 30;
-  const slides = course?.chapterContentSlides??[];
+ const fps=30;
+ const slides=course?.chapterContentSlides??[];
 
+  
   const durationInFrames=useMemo(()=>{
     if(!durationsBySlideId) return;
     return slides.reduce((sum,slide)=>sum+(durationsBySlideId[slide.slideId]??fps*6),0)
@@ -24,6 +25,7 @@ function CourseInfoCard({course, durationsBySlideId}: Props) {
   {
     return <div>Loading...</div>
   }
+
 
   return (
     <div>

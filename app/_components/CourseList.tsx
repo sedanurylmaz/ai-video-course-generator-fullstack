@@ -18,6 +18,8 @@ function CourseList() {
     setCourseList(result.data);
   }
 
+  console.log("courses from api", courseList)
+
   return (
     <div className='max-w-6xl mt-10'>
       <h2 className='font-bold text-2xl'>My Courses</h2>

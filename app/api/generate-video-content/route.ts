@@ -9,6 +9,15 @@ import { chapterContentSlides } from "@/config/schema";
 import { db } from "@/config/db";
 import { GENERATE_VIDEO_CONTENT_PROMPT } from "@/data/prompt";
 
+type WhisperResult = {
+  text?: string;
+  chunks?: {
+    text?: string;
+    timestamp?: [number, number];
+  }[];
+};
+
+
 /* ================= TYPES ================= */
 
 type Slide = {
@@ -54,8 +63,80 @@ async function saveAudio(buffer: Buffer, fileName: string) {
     contentType: "audio/mpeg",
     resumable: false,
   });
+
   return `https://storage.googleapis.com/${bucket.name}/${file.name}`;
 }
+
+/* 🔁 TTS with retry + backoff */
+async function ttsChunkWithRetry(
+  text: string,
+  maxAttempts = 4
+): Promise<Buffer> {
+  let lastErr: any;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      if (attempt > 1) {
+        const wait =
+          attempt === 2 ? 10000 :
+          attempt === 3 ? 20000 :
+          30000;
+
+        console.warn(`⏳ TTS retry ${attempt}, waiting ${wait}ms`);
+        await sleep(wait);
+      }
+
+      const res = await axios.post(
+        "https://api.fonada.ai/tts/generate-audio-large",
+        {
+          input: text,
+          voice: "Vaanee",
+          language: "English",
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${process.env.FONADALAB_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          responseType: "arraybuffer",
+          timeout: 120000,
+          validateStatus: () => true,
+        }
+      );
+
+      if (res.status === 429) {
+        throw new Error("TTS_RATE_LIMIT");
+      }
+
+      if (res.status < 200 || res.status >= 300) {
+        throw new Error(`TTS_HTTP_${res.status}`);
+      }
+
+      const buf = Buffer.from(res.data);
+
+      if (!buf || buf.length < 500) {
+        throw new Error(`TTS_TINY_BUFFER_${buf?.length}`);
+      }
+
+      return buf;
+
+    } catch (err: any) {
+      lastErr = err;
+
+      if (
+        err.message?.includes("RATE_LIMIT") ||
+        err.message?.includes("TINY_BUFFER")
+      ) {
+        continue;
+      }
+
+      break;
+    }
+  }
+
+  throw lastErr;
+}
+
 
 async function generateCaptions(audioUrl: string) {
   return replicate.run(
@@ -69,7 +150,7 @@ async function generateCaptions(audioUrl: string) {
 export async function POST(req: NextRequest) {
   const { chapter, courseId } = await req.json();
 
-  /* ---------- GUARD: chapter zaten üretilmiş mi? ---------- */
+  /* ---------- CHAPTER GUARD ---------- */
   const existing = await db
     .select()
     .from(chapterContentSlides)
@@ -80,7 +161,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       skipped: true,
-      message: "Chapter already generated",
+      reason: "Chapter already generated",
     });
   }
 
@@ -110,53 +191,60 @@ Return ONLY valid JSON.
     aiText = aiText.replace(/```json|```/g, "").trim();
   }
 
-  // 🔒 sadece array kısmını al
   const start = aiText.indexOf("[");
   const end = aiText.lastIndexOf("]");
-  if (start === -1 || end === -1) {
-    console.error("AI RAW OUTPUT:", aiText);
-    throw new Error("Invalid AI JSON");
+
+  if (start === -1 || end === -1 || end <= start) {
+    console.error("❌ AI INVALID JSON");
+    console.error(aiText);
+
+    return NextResponse.json({
+      success: false,
+      reason: "AI_INVALID_JSON",
+    });
   }
 
   const slides: Slide[] = JSON.parse(
     aiText.slice(start, end + 1)
   );
 
-  /* ---------- TTS + DB ---------- */
+  /* ---------- SLIDES LOOP ---------- */
+  let successCount = 0;
+
   for (const slide of slides) {
     try {
       const chunks = chunkText(slide.narration.fullText);
       const audioBuffers: Buffer[] = [];
 
       for (const chunk of chunks) {
-        await sleep(7000); // ⏱️ rate limit koruması
-
-        const res = await axios.post(
-          "https://api.fonada.ai/tts/generate-audio-large",
-          {
-            input: chunk,
-            voice: "Vaanee",
-            language: "English",
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${process.env.FONADALAB_API_KEY}`,
-              "Content-Type": "application/json",
-            },
-            responseType: "arraybuffer",
-            timeout: 120000,
-          }
-        );
-
-        audioBuffers.push(Buffer.from(res.data));
+        await sleep(20000); // 🔒 rate limit safety
+        const buf = await ttsChunkWithRetry(chunk);
+        audioBuffers.push(buf);
       }
 
-      const audioUrl = await saveAudio(
-        Buffer.concat(audioBuffers),
-        slide.slideId
-      );
+      const finalBuffer = Buffer.concat(audioBuffers);
 
-      const captions = await generateCaptions(audioUrl);
+      // 🔒 AUDIO VALIDATION
+      if (!finalBuffer || finalBuffer.length < 3000) {
+        console.warn("⏭️ Audio too small, skipping slide:", slide.slideId);
+        continue;
+      }
+
+      const audioUrl = await saveAudio(finalBuffer, slide.slideId);
+
+
+      const captions = (await generateCaptions(audioUrl)) as WhisperResult;
+
+
+      const hasRealText =
+        captions?.chunks?.some(
+          (c: any) => c.text && c.text.trim().length > 3
+        );
+
+      if (!hasRealText) {
+        console.warn("⏭️ Caption useless, skipping:", slide.slideId);
+        continue;
+      }
 
       await db.insert(chapterContentSlides).values({
         chapterId: chapter.chapterId,
@@ -171,15 +259,17 @@ Return ONLY valid JSON.
         caption: captions,
       });
 
+      successCount++;
       console.log("✅ SLIDE OK:", slide.slideId);
 
     } catch (err) {
-      console.error("❌ SLIDE ERROR:", slide.slideId, err);
+      console.error("❌ SLIDE ERROR (SKIPPED):", slide.slideId, err);
     }
   }
 
   return NextResponse.json({
     success: true,
     totalSlides: slides.length,
+    generated: successCount,
   });
 }

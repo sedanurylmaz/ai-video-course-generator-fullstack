@@ -4,7 +4,8 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { COURSE_CONFIG_PROMPT } from "@/data/prompt";
 import { coursesTable } from "@/config/schema";
 import { db } from '@/config/db'
-import { currentUser } from "@clerk/nextjs/server";
+import { auth, currentUser } from "@clerk/nextjs/server";
+import { eq } from "drizzle-orm";
 
 
 const apiKey = process.env.GEMINI_API_KEY;
@@ -17,6 +18,20 @@ export const POST = async(req: NextRequest)=> {
     try {
         const { userInput, courseId, type } = await req.json();
         const user=await currentUser();
+        const { has }=await auth();
+
+        const isPaidUser = has({ plan: 'monthly' })
+
+        if(!isPaidUser)
+        {
+            const userCourses=await db.select().from(coursesTable)
+            .where(eq(coursesTable.userId,user?.primaryEmailAddress?.emailAddress as string));
+
+            if(userCourses?.length>=2)
+            {
+                return NextResponse.json({ msg: 'max limit' });
+            }
+        }
 
         if(!userInput) {
             return NextResponse.json({error:"userInput is required"},{status: 400})
@@ -42,26 +57,28 @@ export const POST = async(req: NextRequest)=> {
 
         const json = JSON.parse(cleaned);
 
+        const safeUserInput =
+            userInput.length > 100 ? userInput.slice(0, 100) : userInput;
+
+
         //Save to DB
         const courseResult=await db.insert(coursesTable).values({
             courseId: courseId,
             courseName: json.courseName,
-            userInput: userInput,
+            userInput: safeUserInput,
             type: type,
             courseLayout: json,
-            userId: user?.primaryEmailAddress?.emailAddress||''
+            userId: user?.primaryEmailAddress?.emailAddress||"",
         }).returning();
-
-        /*return NextResponse.json({
-            ok: true,
-            data: json,
-        });*/
 
         return NextResponse.json(courseResult[0]);
 
     } catch (error) {
         console.error("Error: ",error);
+        return NextResponse.json(
+            { error: "Internal Server Error" },
+            { status: 500 }
+         );
     }
 
 }
-
