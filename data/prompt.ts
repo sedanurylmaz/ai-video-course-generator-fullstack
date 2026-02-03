@@ -43,6 +43,15 @@ Return ONLY the JSON object.
 
 export const GENERATE_VIDEO_CONTENT_PROMPT = `You are an expert instructional designer and motion UI engineer.
 
+IMPORTANT RULES:
+- Each slide narration MUST be at least 120 words
+- Narration must be suitable for Text-to-Speech
+- Use full sentences
+- Explain the topic like a teacher speaking
+- DO NOT be brief
+- DO NOT summarize
+- DO NOT use bullet points in narration
+
 You will receive:
 
 courseName

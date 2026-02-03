@@ -1,22 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import axios from "axios";
 import { Storage } from "@google-cloud/storage";
 import Replicate from "replicate";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import OpenAI from "openai";
 import { eq } from "drizzle-orm";
 
 import { chapterContentSlides } from "@/config/schema";
 import { db } from "@/config/db";
 import { GENERATE_VIDEO_CONTENT_PROMPT } from "@/data/prompt";
-
-type WhisperResult = {
-  text?: string;
-  chunks?: {
-    text?: string;
-    timestamp?: [number, number];
-  }[];
-};
-
 
 /* ================= TYPES ================= */
 
@@ -40,21 +30,32 @@ const replicate = new Replicate({
   auth: process.env.REPLICATE_API_KEY!,
 });
 
-const genAI = new GoogleGenerativeAI(
-  process.env.GEMINI_API_KEY!
-);
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY!,
+});
 
-const sleep = (ms: number) =>
-  new Promise(res => setTimeout(res, ms));
+console.log("🔑 OPENAI KEY USED:", process.env.OPENAI_API_KEY?.slice(0, 8));
 
 /* ================= HELPERS ================= */
 
-function chunkText(text: string, size = 180) {
-  const chunks: string[] = [];
-  for (let i = 0; i < text.length; i += size) {
-    chunks.push(text.slice(i, i + size));
+function extractJsonArray(text: string): any[] {
+  if (!text) throw new Error("EMPTY_AI_TEXT");
+
+  let cleaned = text.trim();
+
+  if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/```json|```/g, "").trim();
   }
-  return chunks;
+
+  const start = cleaned.indexOf("[");
+  const end = cleaned.lastIndexOf("]");
+
+  if (start === -1 || end === -1 || end <= start) {
+    console.error("❌ AI OUTPUT (NO JSON ARRAY):", cleaned.slice(0, 800));
+    throw new Error("AI_DID_NOT_RETURN_JSON_ARRAY");
+  }
+
+  return JSON.parse(cleaned.slice(start, end + 1));
 }
 
 async function saveAudio(buffer: Buffer, fileName: string) {
@@ -67,77 +68,6 @@ async function saveAudio(buffer: Buffer, fileName: string) {
   return `https://storage.googleapis.com/${bucket.name}/${file.name}`;
 }
 
-/* 🔁 TTS with retry + backoff */
-async function ttsChunkWithRetry(
-  text: string,
-  maxAttempts = 4
-): Promise<Buffer> {
-  let lastErr: any;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      if (attempt > 1) {
-        const wait =
-          attempt === 2 ? 10000 :
-          attempt === 3 ? 20000 :
-          30000;
-
-        console.warn(`⏳ TTS retry ${attempt}, waiting ${wait}ms`);
-        await sleep(wait);
-      }
-
-      const res = await axios.post(
-        "https://api.fonada.ai/tts/generate-audio-large",
-        {
-          input: text,
-          voice: "Vaanee",
-          language: "English",
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.FONADALAB_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          responseType: "arraybuffer",
-          timeout: 120000,
-          validateStatus: () => true,
-        }
-      );
-
-      if (res.status === 429) {
-        throw new Error("TTS_RATE_LIMIT");
-      }
-
-      if (res.status < 200 || res.status >= 300) {
-        throw new Error(`TTS_HTTP_${res.status}`);
-      }
-
-      const buf = Buffer.from(res.data);
-
-      if (!buf || buf.length < 500) {
-        throw new Error(`TTS_TINY_BUFFER_${buf?.length}`);
-      }
-
-      return buf;
-
-    } catch (err: any) {
-      lastErr = err;
-
-      if (
-        err.message?.includes("RATE_LIMIT") ||
-        err.message?.includes("TINY_BUFFER")
-      ) {
-        continue;
-      }
-
-      break;
-    }
-  }
-
-  throw lastErr;
-}
-
-
 async function generateCaptions(audioUrl: string) {
   return replicate.run(
     "vaibhavs10/incredibly-fast-whisper:3ab86df6c8f54c11309d4d1f930ac292bad43ace52d10c80d87eb258b3c9f79c",
@@ -145,31 +75,19 @@ async function generateCaptions(audioUrl: string) {
   );
 }
 
-/* ================= API ================= */
-
-export async function POST(req: NextRequest) {
-  const { chapter, courseId } = await req.json();
-
-  /* ---------- CHAPTER GUARD ---------- */
-  const existing = await db
-    .select()
-    .from(chapterContentSlides)
-    .where(eq(chapterContentSlides.chapterId, chapter.chapterId))
-    .limit(1);
-
-  if (existing.length > 0) {
-    return NextResponse.json({
-      success: true,
-      skipped: true,
-      reason: "Chapter already generated",
-    });
-  }
-
-  /* ---------- AI SLIDE GENERATION ---------- */
-  const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+async function generateTTS(text: string): Promise<Buffer> {
+  const speech = await openai.audio.speech.create({
+    model: "gpt-4o-mini-tts",
+    voice: "alloy",
+    input: text,
   });
 
+  return Buffer.from(await speech.arrayBuffer());
+}
+
+/* ================= SLIDE GENERATION ================= */
+
+async function generateSlidesWithOpenAI(chapter: any): Promise<Slide[]> {
   const prompt = `
 ${GENERATE_VIDEO_CONTENT_PROMPT}
 
@@ -178,73 +96,72 @@ INPUT:
   "courseName": "${chapter.courseName ?? ""}",
   "chapterTitle": "${chapter.chapterTitle}",
   "chapterSlug": "${chapter.chapterId}",
-  "subContent": ${JSON.stringify(chapter.subContent.slice(0, 3))}
+  "subContent": ${JSON.stringify((chapter.subContent ?? []).slice(0, 3))}
 }
 
-Return ONLY valid JSON.
+Return ONLY valid JSON array.
 `;
 
-  const result = await model.generateContent(prompt);
-  let aiText = result.response.text().trim();
+  const resp = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    temperature: 0.3,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are a strict JSON generator. Return ONLY valid JSON. No markdown. No explanation.",
+      },
+      {
+        role: "user",
+        content: prompt,
+      },
+    ],
+  });
 
-  if (aiText.startsWith("```")) {
-    aiText = aiText.replace(/```json|```/g, "").trim();
+  const text = resp.choices?.[0]?.message?.content ?? "";
+  const slidesRaw = extractJsonArray(text);
+
+  if (!Array.isArray(slidesRaw) || slidesRaw.length === 0) {
+    throw new Error("NO_SLIDES_RETURNED");
   }
 
-  const start = aiText.indexOf("[");
-  const end = aiText.lastIndexOf("]");
+  return slidesRaw.map((s: any) => ({
+    slideId: String(s.slideId),
+    slideIndex: Number(s.slideIndex),
+    title: String(s.title ?? ""),
+    subtitle: String(s.subtitle ?? ""),
+    audioFileName: String(s.audioFileName ?? `${s.slideId}.mp3`),
+    narration: { fullText: String(s.narration?.fullText ?? "") },
+    html: String(s.html ?? ""),
+    revealData: Array.isArray(s.revealData) ? s.revealData.map(String) : [],
+  }));
+}
 
-  if (start === -1 || end === -1 || end <= start) {
-    console.error("❌ AI INVALID JSON");
-    console.error(aiText);
+/* ================= API ================= */
 
-    return NextResponse.json({
-      success: false,
-      reason: "AI_INVALID_JSON",
-    });
+export async function POST(req: NextRequest) {
+  const { chapter, courseId } = await req.json();
+
+  /* ---------- GUARD ---------- */
+  const existing = await db
+    .select()
+    .from(chapterContentSlides)
+    .where(eq(chapterContentSlides.chapterId, chapter.chapterId))
+    .limit(1);
+
+  if (existing.length > 0) {
+    return NextResponse.json({ success: true, skipped: true });
   }
 
-  const slides: Slide[] = JSON.parse(
-    aiText.slice(start, end + 1)
-  );
+  /* ---------- GENERATE SLIDES ---------- */
+  const slides = await generateSlidesWithOpenAI(chapter);
 
-  /* ---------- SLIDES LOOP ---------- */
-  let successCount = 0;
-
+  /* ---------- TTS + DB ---------- */
   for (const slide of slides) {
     try {
-      const chunks = chunkText(slide.narration.fullText);
-      const audioBuffers: Buffer[] = [];
-
-      for (const chunk of chunks) {
-        await sleep(20000); // 🔒 rate limit safety
-        const buf = await ttsChunkWithRetry(chunk);
-        audioBuffers.push(buf);
-      }
-
-      const finalBuffer = Buffer.concat(audioBuffers);
-
-      // 🔒 AUDIO VALIDATION
-      if (!finalBuffer || finalBuffer.length < 3000) {
-        console.warn("⏭️ Audio too small, skipping slide:", slide.slideId);
-        continue;
-      }
-
-      const audioUrl = await saveAudio(finalBuffer, slide.slideId);
-
-
-      const captions = (await generateCaptions(audioUrl)) as WhisperResult;
-
-
-      const hasRealText =
-        captions?.chunks?.some(
-          (c: any) => c.text && c.text.trim().length > 3
-        );
-
-      if (!hasRealText) {
-        console.warn("⏭️ Caption useless, skipping:", slide.slideId);
-        continue;
-      }
+      const audioBuffer = await generateTTS(slide.narration.fullText);
+      const audioUrl = await saveAudio(audioBuffer, slide.slideId);
+      const captions = await generateCaptions(audioUrl);
 
       await db.insert(chapterContentSlides).values({
         chapterId: chapter.chapterId,
@@ -255,21 +172,16 @@ Return ONLY valid JSON.
         audioFileUrl: audioUrl,
         narration: slide.narration,
         html: slide.html,
-        revelData: slide.revealData,
+        revelData: slide.revealData ?? [],
         caption: captions,
       });
-
-      successCount++;
-      console.log("✅ SLIDE OK:", slide.slideId);
-
-    } catch (err) {
-      console.error("❌ SLIDE ERROR (SKIPPED):", slide.slideId, err);
+    } catch (e) {
+      console.error("❌ SLIDE ERROR:", slide.slideId, e);
     }
   }
 
   return NextResponse.json({
     success: true,
     totalSlides: slides.length,
-    generated: successCount,
   });
 }

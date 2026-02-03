@@ -17,13 +17,29 @@ function CourseChapters({ course, durationsBySlideId }: Props) {
 
   const fps = 30;
 
-  const GetChapterDurationInFrame=(chapterId:string)=>{
+  /*const GetChapterDurationInFrame=(chapterId:string)=>{
     if(!durationsBySlideId || !course) return 30;
 
     return course?.chapterContentSlides
     .filter((slide)=>slide.chapterId==chapterId)
     .reduce((sum,slide)=>sum+(durationsBySlideId[slide.slideId]??30),0)
-  }
+  }*/
+
+   const GetChapterDurationInFrame = (chapterId: string) => {
+        if (!durationsBySlideId || !course) return fps * 2;
+
+        const total = course.chapterContentSlides
+            .filter((slide) => slide.chapterId === chapterId)
+            .reduce((sum, slide) => {
+            const duration = Number(durationsBySlideId[slide.slideId]);
+
+            return sum + (Number.isFinite(duration) ? duration : fps * 6);
+            }, 0);
+
+        return Number.isFinite(total) && total > 0 ? total : fps * 2;
+    };
+
+
 
   const durationInFrames = useMemo(() => {
   if (!durationsBySlideId || slides.length === 0) return 0;
