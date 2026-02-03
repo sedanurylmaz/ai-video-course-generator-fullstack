@@ -8,6 +8,7 @@ export const usersTable = pgTable("users", {
   credits: integer().default(2)
 });
 
+
 export const coursesTable = pgTable("courses", {
   id: integer().primaryKey().generatedAlwaysAsIdentity(),
   userId: varchar({length:255}).notNull().references(()=>usersTable.email),

@@ -53,35 +53,35 @@ function CoursePreview() {
   }
 
 
-    const fps=30;
-    const slides=courseDetail?.chapterContentSlides??[];
-  
-    const [durationsBySlideId,setDurationsBySlideId]=useState<Record<string,number>|null>(null);
-
-  
-    useEffect(()=>{
-      let cancelled=false;
-      const run=async()=>{
-        if(!slides) return ;
-        const entries=await Promise.all(
-          slides.map(async(slide)=>{
-            const audioData=await getAudioData(slide?.audioFileUrl)
-            const audioSec=audioData?.durationInSeconds;
-            const frames=Math.max(1,Math.ceil(audioSec*fps));
-            return [slide.slideId,frames] as const;
-          })
-        );
-        if(!cancelled){
-          setDurationsBySlideId(Object.fromEntries(entries))
+     const fps = 30;
+      const slides = courseDetail?.chapterContentSlides??[];
+    
+      const [durationsBySlideId, setDurationsBySlideId] = useState<Record<string,number>|null>(null);
+      
+      useEffect(()=>{
+        let cancelled = false;
+        const run=async()=>{
+          if(!slides) return;
+          const entries=await Promise.all(
+            slides.map(async(slide)=>{
+              const audioData=await getAudioData(slide?.audioFileUrl);
+              const audioSec=audioData?.durationInSeconds;
+              const frames=Math.max(1,Math.ceil(audioSec*fps));
+              return [slide.slideId,frames] as const;
+    
+            })
+          );
+          if(cancelled) {
+            setDurationsBySlideId(Object.fromEntries(entries))
+          }
         }
-      }
-      run ();
-  
-      return () => {
-        cancelled = true;
-      }
-  
-    },[slides,fps])
+        run();
+    
+        return () => {
+          cancelled = true;
+        }
+    
+      },[slides,fps])
 
   return (
     <div>

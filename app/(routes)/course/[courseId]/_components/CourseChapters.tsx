@@ -25,10 +25,15 @@ function CourseChapters({ course, durationsBySlideId }: Props) {
     .reduce((sum,slide)=>sum+(durationsBySlideId[slide.slideId]??30),0)
   }
 
-  const durationInFrames=useMemo(()=>{
-      if(!durationsBySlideId) return;
-      return slides.reduce((sum,slide)=>sum+(durationsBySlideId[slide.slideId]??fps*6),0)
-    },[durationsBySlideId,slides,fps])
+  const durationInFrames = useMemo(() => {
+  if (!durationsBySlideId || slides.length === 0) return 0;
+
+  return slides.reduce(
+    (sum, slide) => sum + (durationsBySlideId[slide.slideId] ?? fps * 6),
+    0
+  );
+}, [durationsBySlideId, slides, fps]);
+
 
   return (
     <div  className='max-w-6xl -mt-5 p-10 border rounded-3xl shadow w-full
@@ -68,7 +73,7 @@ function CourseChapters({ course, durationsBySlideId }: Props) {
                                     slides: slides.filter((slide)=>slide.chapterId==chapter.chapterId),
                                     durationsBySlideId: durationsBySlideId??{}
                                 }}
-                                durationInFrames={durationInFrames && durationInFrames!==0?durationInFrames:30}
+                                durationInFrames={GetChapterDurationInFrame(chapter?.chapterId)}
                                 //durationInFrames={30}
                                 compositionWidth={1280}
                                 compositionHeight={720}

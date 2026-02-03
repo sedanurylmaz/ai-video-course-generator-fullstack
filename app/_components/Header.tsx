@@ -1,9 +1,10 @@
-"use client"
+"use client";
 import { UserButton, useUser } from '@clerk/nextjs'
 import React from 'react'
 import Image from 'next/image'
 import { SignIn, SignInButton } from '@clerk/clerk-react';
 import { Button } from '@/components/ui/button';
+import Link from "next/link";
 
 function Header() {
   const { user } = useUser();
@@ -14,8 +15,12 @@ function Header() {
           <h2 className='text-xl font-bold'><span className='text-primary'>Video</span>Course</h2>
       </div>
       <ul className='flex gap-8 items-center'>
-        <li className='text-lg hove:text-primary font font-medium cursor-pointer'>Home</li>
-        <li className='text-lg hove:text-primary font font-medium cursor-pointer'>Pricing</li>
+        <Link href={'/'}>
+          <li className='text-lg hover:text-primary font font-medium cursor-pointer'>Home</li>
+        </Link>
+        <Link href={'/pricing'}>
+          <li className='text-lg hover:text-primary font font-medium cursor-pointer'>Pricing</li>
+        </Link>
       </ul>
 
       {user ? (

@@ -35,13 +35,21 @@ function Hero() {
 
         try {
             setLoading(true);
-            const result=await axios.post('/api/user/generate-course-layout',{
+            const result=await axios.post('/api/generate-course-layout',{
                 userInput,
                 type,
                 courseId: courseId
             });
             console.log(result.data);
             setLoading(false);
+
+            if(result?.data?.msg=='max limit')
+            {
+                toast.error('Maximum course created ! Try Monthly Plan',{id:toastId})
+                setLoading(false); //Course oluşturmayı kapattık(Tabii bu yazı çıkınca kapattık). Her seferinde oluşturmaması için
+                return;
+            }
+
             toast.success('Course layout generated succesfully!',{ id: toastId });
 
             //navigate to course editor page
