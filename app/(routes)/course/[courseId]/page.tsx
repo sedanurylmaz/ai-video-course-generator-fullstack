@@ -38,6 +38,7 @@ function CoursePreview() {
   const GenerateVideoContent = async(course: Course) => {
       
     for(let i=0;i<course?.courseLayout?.chapters?.length;i++) {
+      //if(i>0) break;
       const toastLoading = toast.loading('Generating Video Content for Chapter ...'+(i+1));
       console.log("chapter gönderilen:", course?.courseLayout?.chapters?.[i]); //Tüm chapterlar için yaptık, tek chapter için 0 yapacaksın içini.
 
